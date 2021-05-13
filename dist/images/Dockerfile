@@ -45,6 +45,8 @@ ARG ARCH
 ENV CNI_VERSION=v0.8.6
 ADD loopback .
 ADD portmap .
+ADD route-override .
+ADD global-ipam .
 
 ENV KUBE_VERSION="v1.13.2"
 ADD kubectl /usr/bin/kubectl

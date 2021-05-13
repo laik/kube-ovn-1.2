@@ -1,0 +1,16 @@
+.idea/*
+.DS_Store
+vagrant/.vagrant/*
+vagrant/kubernetes-setup/*.retry
+vagrant/kubernetes-setup/join-command
+dist/images/kube-ovn
+dist/images/kube-ovn-controller
+dist/images/kube-ovn-daemon
+dist/images/kube-ovn-gateway
+dist/images/kube-ovn-webhook
+dist/images/kube-ovn-pinger
+dist/images/kube-ovn-speaker
+kube-ovn.yaml
+kube-ovn-crd.yaml
+ovn.yaml
+vendor

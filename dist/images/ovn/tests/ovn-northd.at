@@ -1,0 +1,1481 @@
+AT_BANNER([OVN northd])
+AT_SETUP([ovn -- check   from NBDB to SBDB])
+ovn_start
+
+ovn-nbctl create Logical_Router name=R1
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+ovn-sbctl chassis-add gw2 geneve 1.2.4.8
+
+# Connect alice to R1 as distributed router gateway port on hv2
+ovn-nbctl lrp-add R1 alice 00:00:02:01:02:03 172.16.1.1/24
+
+ovn-nbctl --wait=sb \
+    --id=@gc0 create Gateway_Chassis name=alice_gw1 \
+                                     chassis_name=gw1 \
+                                     priority=20 -- \
+    --id=@gc1 create Gateway_Chassis name=alice_gw2 \
+                                     chassis_name=gw2 \
+                                     priority=10 -- \
+    set Logical_Router_Port alice 'gateway_chassis=[@gc0,@gc1]'
+
+nb_gwc1_uuid=`ovn-nbctl --bare --columns _uuid find Gateway_Chassis name="alice_gw1"`
+
+# With the new ha_chassis_group table added, there should be no rows in
+# gateway_chassis table in SB DB.
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
+
+# There should be one ha_chassis_group with the name "alice"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="alice"`
+
+AT_CHECK([test $ha_chassi_grp_name = alice])
+
+ha_chgrp_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group name=alice`
+
+AT_CHECK([ovn-sbctl --bare --columns ha_chassis_group find port_binding \
+logical_port="cr-alice" | grep $ha_chgrp_uuid | wc -l], [0], [1
+])
+
+# There should be one ha_chassis_group with the name "alice"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="alice"`
+
+AT_CHECK([test $ha_chassi_grp_name = alice])
+
+ha_chgrp_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group name=alice`
+
+AT_CHECK([ovn-sbctl --bare --columns ha_chassis_group find port_binding \
+logical_port="cr-alice" | grep $ha_chgrp_uuid | wc -l], [0], [1
+])
+
+ha_ch=`ovn-sbctl --bare --columns ha_chassis  find ha_chassis_group`
+# Trim the spaces.
+ha_ch=`echo $ha_ch | sed 's/ //g'`
+
+ha_ch_list=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list="$ha_ch_list $i"
+done
+
+# Trim the spaces.
+ha_ch_list=`echo $ha_ch_list | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list" = "$ha_ch"])
+
+# Delete chassis - gw2 in SB DB.
+# ovn-northd should not recreate ha_chassis rows
+# repeatedly when gw2 is deleted.
+ovn-sbctl chassis-del gw2
+
+ha_ch_list_1=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list_1="$ha_ch_list_1 $i"
+done
+
+# Trim the spaces.
+ha_ch_list_1=`echo $ha_ch_list_1 | sed 's/ //g'`
+
+ha_ch_list_2=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list_2="$ha_ch_list_2 $i"
+done
+
+# Trim the spaces.
+ha_ch_list_2=`echo $ha_ch_list_2 | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list_1" = "$ha_ch_list_2"])
+
+# Add back the gw2 chassis
+ovn-sbctl chassis-add gw2 geneve 1.2.4.8
+
+# delete the 2nd Gateway_Chassis on NBDB for alice port
+gw_ch=`ovn-sbctl --bare --columns gateway_chassis find port_binding \
+logical_port="cr-alice"`
+AT_CHECK([test "$gw_ch" = ""])
+
+ha_ch=`ovn-sbctl --bare --columns ha_chassis  find ha_chassis_group`
+ha_ch=`echo $ha_ch | sed 's/ //g'`
+# Trim the spaces.
+echo "ha ch in grp = $ha_ch"
+
+ha_ch_list=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list="$ha_ch_list $i"
+done
+
+# Trim the spaces.
+ha_ch_list=`echo $ha_ch_list | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list" = "$ha_ch"])
+
+# delete the 2nd Gateway_Chassis on NBDB for alice port
+ovn-nbctl --wait=sb set Logical_Router_Port alice gateway_chassis=${nb_gwc1_uuid}
+
+# There should be only 1 row in ha_chassis SB DB table.
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis | wc -l], [0], [1
+])
+
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
+
+# There should be only 1 row in ha_chassis SB DB table.
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis | wc -l], [0], [1
+])
+
+# delete all the gateway_chassis on NBDB for alice port
+
+ovn-nbctl --wait=sb clear Logical_Router_Port alice gateway_chassis
+
+# expect that the ha_chassis doesn't exist anymore
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl list ha_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl list ha_chassis_group | wc -l], [0], [0
+])
+
+# expect that the ha_chassis doesn't exist anymore
+AT_CHECK([ovn-sbctl list ha_chassis | wc -l], [0], [0
+])
+AT_CHECK([ovn-sbctl list ha_chassis_group | wc -l], [0], [0
+])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check Gateway_Chassis propagation from NBDB to SBDB backwards compatibility])
+ovn_start
+
+ovn-nbctl create Logical_Router name=R1
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+ovn-sbctl chassis-add gw2 geneve 1.2.4.8
+
+ovn-nbctl --wait=sb lrp-add R1 bob 00:00:02:01:02:03 172.16.1.1/24 \
+    -- set Logical_Router_Port bob options:redirect-chassis="gw1"
+
+
+# It should be converted to ha_chassis_group entries in SBDB, and
+# still redirect-chassis is kept for backwards compatibility
+
+AT_CHECK([ovn-sbctl list gateway_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis | wc -l], [0], [1
+])
+
+AT_CHECK([ovn-sbctl --bare --columns _uuid list ha_chassis_group | wc -l], [0], [1
+])
+
+# There should be one ha_chassis_group with the name "bob_gw1"
+ha_chassi_grp_name=`ovn-sbctl --bare --columns name find \
+ha_chassis_group name="bob_gw1"`
+
+AT_CHECK([test $ha_chassi_grp_name = bob_gw1])
+
+ha_chgrp_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group name=bob_gw1`
+
+AT_CHECK([ovn-sbctl --bare --columns ha_chassis_group find port_binding \
+logical_port="cr-bob" | grep $ha_chgrp_uuid | wc -l], [0], [1
+])
+
+ovn-nbctl --wait=sb remove Logical_Router_Port bob options redirect-chassis
+
+# expect that the ha_chassis/ha_chassis_group doesn't exist anymore
+
+AT_CHECK([ovn-sbctl find Gateway_Chassis name=bob_gw1], [0], [])
+AT_CHECK([ovn-sbctl list ha_chassis | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl list ha_chassis_group | wc -l], [0], [0
+])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check up state of VIF LSP])
+ovn_start
+
+ovn-nbctl ls-add S1
+ovn-nbctl --wait=sb lsp-add S1 S1-vm1
+AT_CHECK([test x`ovn-nbctl lsp-get-up S1-vm1` = xdown])
+
+ovn-sbctl chassis-add hv1 geneve 127.0.0.1
+ovn-sbctl lsp-bind S1-vm1 hv1
+AT_CHECK([test x`ovn-nbctl lsp-get-up S1-vm1` = xup])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check up state of router LSP linked to a distributed LR])
+ovn_start
+
+ovn-nbctl lr-add R1
+ovn-nbctl lrp-add R1 R1-S1 02:ac:10:01:00:01 172.16.1.1/24
+
+ovn-nbctl ls-add S1
+ovn-nbctl lsp-add S1 S1-R1
+ovn-nbctl lsp-set-type S1-R1 router
+ovn-nbctl lsp-set-addresses S1-R1 02:ac:10:01:00:01
+ovn-nbctl --wait=sb lsp-set-options S1-R1 router-port=R1-S1
+AT_CHECK([test x`ovn-nbctl lsp-get-up S1-R1` = xup])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check up state of router LSP linked to a gateway LR])
+ovn_start
+
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+
+ovn-nbctl create Logical_Router name=R1 options:chassis=gw1
+ovn-nbctl lrp-add R1 R1-S1 02:ac:10:01:00:01 172.16.1.1/24
+
+ovn-nbctl ls-add S1
+ovn-nbctl lsp-add S1 S1-R1
+ovn-nbctl lsp-set-type S1-R1 router
+ovn-nbctl lsp-set-addresses S1-R1 02:ac:10:01:00:01
+ovn-nbctl --wait=sb lsp-set-options S1-R1 router-port=R1-S1
+
+ovn-sbctl lsp-bind S1-R1 gw1
+AT_CHECK([test x`ovn-nbctl lsp-get-up S1-R1` = xup])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check up state of router LSP linked to an LRP with set Gateway Chassis])
+ovn_start
+
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+
+ovn-nbctl lr-add R1
+ovn-nbctl lrp-add R1 R1-S1 02:ac:10:01:00:01 172.16.1.1/24
+ovn-nbctl lrp-set-gateway-chassis R1-S1 gw1
+
+ovn-nbctl ls-add S1
+ovn-nbctl lsp-add S1 S1-R1
+ovn-nbctl lsp-set-type S1-R1 router
+ovn-nbctl lsp-set-addresses S1-R1 router
+ovn-nbctl --wait=sb lsp-set-options S1-R1 router-port=R1-S1
+AT_CHECK([test x`ovn-nbctl lsp-get-up S1-R1` = xup])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check IPv6 RA config propagation to SBDB])
+ovn_start
+
+ovn-nbctl lr-add ro
+ovn-nbctl lrp-add ro ro-sw 00:00:00:00:00:01 aef0:0:0:0:0:0:0:1/64
+ovn-nbctl ls-add sw
+ovn-nbctl lsp-add sw sw-ro
+ovn-nbctl lsp-set-type sw-ro router
+ovn-nbctl lsp-set-options sw-ro router-port=ro-sw
+ovn-nbctl lsp-set-addresses sw-ro 00:00:00:00:00:01
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:send_periodic=true
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:address_mode=slaac
+ovn-nbctl --wait=sb set Logical_Router_Port ro-sw ipv6_ra_configs:mtu=1280
+
+uuid=$(ovn-sbctl --columns=_uuid --bare find Port_Binding logical_port=ro-sw)
+
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_send_periodic],
+[0], ["true"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_address_mode],
+[0], [slaac
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[0], ["600"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[0], ["200"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_mtu],
+[0], ["1280"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_src_eth],
+[0], ["00:00:00:00:00:01"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_src_addr],
+[0], ["fe80::200:ff:fe00:1"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_prefixes],
+[0], ["aef0::/64"
+])
+
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:max_interval=300
+ovn-nbctl --wait=sb set Logical_Router_Port ro-sw ipv6_ra_configs:min_interval=600
+
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[0], ["300"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[0], ["225"
+])
+
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:max_interval=300
+ovn-nbctl --wait=sb set Logical_Router_Port ro-sw ipv6_ra_configs:min_interval=250
+
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[0], ["300"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[0], ["225"
+])
+
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:max_interval=0
+ovn-nbctl --wait=sb set Logical_Router_Port ro-sw ipv6_ra_configs:min_interval=0
+
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[0], ["4"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[0], ["3"
+])
+
+ovn-nbctl set Logical_Router_Port ro-sw ipv6_ra_configs:max_interval=3600
+ovn-nbctl --wait=sb set Logical_Router_Port ro-sw ipv6_ra_configs:min_interval=2400
+
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[0], ["1800"
+])
+AT_CHECK([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[0], ["1350"
+])
+
+ovn-nbctl --wait=sb set Logical_Router_port ro-sw ipv6_ra_configs:send_periodic=false
+
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_send_periodic],
+[1], [], [ovn-sbctl: no key "ipv6_ra_send_periodic" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_max_interval],
+[1], [], [ovn-sbctl: no key "ipv6_ra_max_interval" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_min_interval],
+[1], [], [ovn-sbctl: no key "ipv6_ra_min_interval" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_mtu],
+[1], [], [ovn-sbctl: no key "ipv6_ra_mtu" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_address_mode],
+[1], [], [ovn-sbctl: no key "ipv6_ra_address_mode" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_src_eth],
+[1], [], [ovn-sbctl: no key "ipv6_ra_src_eth" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_src_addr],
+[1], [], [ovn-sbctl: no key "ipv6_ra_src_addr" in Port_Binding record "${uuid}" column options
+])
+AT_CHECK_UNQUOTED([ovn-sbctl get Port_Binding ${uuid} options:ipv6_ra_prefixes],
+[1], [], [ovn-sbctl: no key "ipv6_ra_prefixes" in Port_Binding record "${uuid}" column options
+])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- test unixctl])
+ovn_init_db ovn-sb; ovn-sbctl init
+ovn_init_db ovn-nb; ovn-nbctl init
+
+# test unixctl option
+mkdir "$ovs_base"/northd
+as northd start_daemon ovn-northd --unixctl="$ovs_base"/northd/ovn-northd.ctl --ovnnb-db=unix:"$ovs_base"/ovn-nb/ovn-nb.sock --ovnsb-db=unix:"$ovs_base"/ovn-sb/ovn-sb.sock
+ovn-nbctl ls-add sw
+ovn-nbctl --wait=sb lsp-add sw p1
+# northd created with unixctl option successfully created port_binding entry
+AT_CHECK([ovn-sbctl --bare --columns datapath find port_binding logical_port="p1" | wc -l], [0], [1
+])
+AT_CHECK([ovn-nbctl --wait=sb lsp-del p1])
+
+# ovs-appctl exit with unixctl option
+OVS_APP_EXIT_AND_WAIT_BY_TARGET(["$ovs_base"/northd/ovn-northd.ctl], ["$ovs_base"/northd/ovn-northd.pid])
+
+# Check no port_binding entry for new port as ovn-northd is not running
+ovn-nbctl lsp-add sw p2
+ovn-nbctl --timeout=10 --wait=sb sync
+AT_CHECK([ovn-sbctl --bare --columns datapath find port_binding logical_port="p2" | wc -l], [0], [0
+])
+
+# test default unixctl path
+as northd start_daemon ovn-northd --ovnnb-db=unix:"$ovs_base"/ovn-nb/ovn-nb.sock --ovnsb-db=unix:"$ovs_base"/ovn-sb/ovn-sb.sock
+ovn-nbctl --wait=sb lsp-add sw p3
+# northd created with default unixctl path successfully created port_binding entry
+AT_CHECK([ovn-sbctl --bare --columns datapath find port_binding logical_port="p3" | wc -l], [0], [1
+])
+
+as ovn-sb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+as ovn-nb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+as northd
+OVS_APP_EXIT_AND_WAIT([ovn-northd])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check HA_Chassis_Group propagation from NBDB to SBDB])
+ovn_start
+
+ovn-nbctl --wait=sb ha-chassis-group-add hagrp1
+
+# ovn-northd should not create HA chassis group and HA chassis rows
+# unless the HA chassis group in OVN NB DB is associated to
+# a logical router port or logical port of type external.
+AT_CHECK([ovn-sbctl --bare --columns name find ha_chassis_group name="hagrp1" \
+| wc -l], [0], [0
+])
+
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch1 30
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch2 20
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch3 10
+
+# There should be no HA_Chassis rows in SB DB.
+AT_CHECK([ovn-sbctl list ha_chassis | grep chassis | awk '{print $3}' \
+| grep -v '-' | wc -l ], [0], [0
+])
+
+# Add chassis ch1.
+ovn-sbctl chassis-add ch1 geneve 127.0.0.2
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl list chassis | grep ch1 | wc -l`])
+
+# There should be no HA_Chassis rows
+AT_CHECK([ovn-sbctl list ha_chassis | grep chassis | awk '{print $3}' \
+| grep -v '-' | wc -l ], [0], [0
+])
+
+# Create a logical router port and attach ha chassis group.
+ovn-nbctl lr-add lr0
+ovn-nbctl lrp-add lr0 lr0-public 00:00:20:20:12:13 172.168.0.100/24
+
+hagrp1_uuid=`ovn-nbctl --bare --columns _uuid find ha_chassis_group name=hagrp1`
+ovn-nbctl set logical_router_port lr0-public ha_chassis_group=$hagrp1_uuid
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Make sure that ovn-northd doesn't recreate the ha_chassis
+# records if the chassis record is missing in SB DB.
+
+ha_ch_list_1=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list_1="$ha_ch_list_1 $i"
+done
+
+# Trim the spaces.
+ha_ch_list_1=`echo $ha_ch_list_1 | sed 's/ //g'`
+
+ha_ch_list_2=''
+for i in `ovn-sbctl --bare --columns _uuid list ha_chassis | sort`
+do
+    ha_ch_list_2="$ha_ch_list_2 $i"
+done
+
+# Trim the spaces.
+ha_ch_list_2=`echo $ha_ch_list_2 | sed 's/ //g'`
+
+AT_CHECK([test "$ha_ch_list_1" = "$ha_ch_list_2"])
+
+# 2 HA chassis should be created with 'chassis' column empty because
+# we have not added hv1 and hv2 chassis to the SB DB.
+AT_CHECK([test 2 = `ovn-sbctl list ha_chassis | grep chassis | awk '{print $3}' \
+| grep -v '-' | wc -l`])
+
+# We should have 1 ha chassis with 'chassis' column set for hv1
+AT_CHECK([test 1 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | awk '{print $3}' \
+| grep '-' | wc -l`])
+
+# Create another logical router port and associate to the same ha_chasis_group
+ovn-nbctl lr-add lr1
+ovn-nbctl lrp-add lr1 lr1-public 00:00:20:20:12:14 182.168.0.100/24
+
+ovn-nbctl set logical_router_port lr1-public ha_chassis_group=$hagrp1_uuid
+
+# We should still have 1 HA chassis group and 3 HA chassis in SB DB.
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Change the priority of ch1 - ha chassis in NB DB. It should get
+# reflected in SB DB.
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch1 100
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns priority find \
+ha_chassis | grep 100 | wc -l`])
+
+# Delete ch1 HA chassis in NB DB.
+ovn-nbctl --wait=sb ha-chassis-group-remove-chassis hagrp1 ch1
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Add back the ha chassis
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch1 40
+OVS_WAIT_UNTIL([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Delete lr0-public. We should still have 1 HA chassis group and
+# 3 HA chassis in SB DB.
+ovn-nbctl --wait=sb lrp-del lr0-public
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Delete lr1-public. There should be no HA chassis group in SB DB.
+ovn-nbctl --wait=sb lrp-del lr1-public
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 0 = `ovn-sbctl list ha_chassis | grep chassis | wc -l`])
+
+# Add lr0-public again
+ovn-nbctl lrp-add lr0 lr0-public 00:00:20:20:12:13 172.168.0.100/24
+ovn-nbctl set logical_router_port lr0-public ha_chassis_group=$hagrp1_uuid
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Create a Gateway chassis. ovn-northd should ignore this.
+ovn-nbctl lrp-set-gateway-chassis lr0-public ch-1 20
+
+# There should be only 1 HA chassis group in SB DB with the
+# name hagrp1.
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group | wc -l`])
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Now delete HA chassis group. ovn-northd should create HA chassis group
+# with the Gateway chassis name
+ovn-nbctl clear logical_router_port lr0-public ha_chassis_group
+ovn-nbctl ha-chassis-group-del hagrp1
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="lr0-public" | wc -l`])
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns _uuid \
+find ha_chassis | wc -l`])
+
+ovn-nbctl lrp-set-gateway-chassis lr0-public ch2 10
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="lr0-public" | wc -l`])
+
+ovn-sbctl --bare --columns _uuid find ha_chassis
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Test if 'ref_chassis' column is properly set or not in
+# SB DB ha_chassis_group.
+ovn-nbctl ls-add sw0
+ovn-nbctl lsp-add sw0 sw0-p1
+
+ovn-sbctl chassis-add ch2 geneve 127.0.0.3
+ovn-sbctl chassis-add ch3 geneve 127.0.0.4
+ovn-sbctl chassis-add comp1 geneve 127.0.0.5
+ovn-sbctl chassis-add comp2 geneve 127.0.0.6
+
+ovn-nbctl lrp-add lr0 lr0-sw0 00:00:20:20:12:14 10.0.0.1/24
+ovn-nbctl lsp-add sw0 sw0-lr0
+ovn-nbctl lsp-set-type sw0-lr0 router
+ovn-nbctl lsp-set-addresses sw0-lr0 router
+ovn-nbctl lsp-set-options sw0-lr0 router-port=lr0-sw0
+
+ovn-sbctl lsp-bind sw0-p1 comp1
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw0-p1` = xup])
+
+comp1_ch_uuid=`ovn-sbctl --bare --columns _uuid find chassis name="comp1"`
+comp2_ch_uuid=`ovn-sbctl --bare --columns _uuid find chassis name="comp2"`
+ch2_ch_uuid=`ovn-sbctl --bare --columns _uuid find chassis name="comp1"`
+
+echo "comp1_ch_uuid = $comp1_ch_uuid"
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp1_ch_uuid" = "$ref_ch_list"])
+
+# unbind sw0-p1
+ovn-sbctl lsp-unbind sw0-p1
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw0-p1` = xdown])
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "" = "$ref_ch_list"])
+
+# Bind sw0-p1 in comp2
+ovn-sbctl lsp-bind sw0-p1 comp2
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp2_ch_uuid" = "$ref_ch_list"])
+
+ovn-nbctl ls-add sw1
+ovn-nbctl lsp-add sw1 sw1-p1
+ovn-nbctl lr-add lr1
+ovn-nbctl lrp-add lr1 lr1-sw1 00:00:20:20:12:15 20.0.0.1/24
+ovn-nbctl lsp-add sw1 sw1-lr1
+ovn-nbctl lsp-set-type sw1-lr1 router
+ovn-nbctl lsp-set-addresses sw1-lr1 router
+ovn-nbctl lsp-set-options sw1-lr1 router-port=lr1-sw1
+
+# Bind sw1-p1 in comp1.
+ovn-sbctl lsp-bind sw1-p1 comp1
+# Wait until sw1-p1 is up
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw1-p1` = xup])
+
+# sw1-p1 is not connected to lr0. So comp1 should not be in 'ref_chassis'
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp2_ch_uuid" = "$ref_ch_list"])
+
+# Now attach sw0 to lr1
+ovn-nbctl lrp-add lr1 lr1-sw0 00:00:20:20:12:16 10.0.0.10/24
+ovn-nbctl lsp-add sw0 sw0-lr1
+ovn-nbctl lsp-set-type sw0-lr1 router
+ovn-nbctl lsp-set-addresses sw0-lr1 router
+ovn-nbctl lsp-set-options sw0-lr1 router-port=lr1-sw0
+
+# Both comp1 and comp2 should be in 'ref_chassis' as sw1 is indirectly
+# connected to lr0
+exp_ref_ch_list=''
+for i in `ovn-sbctl --bare --columns _uuid list chassis | sort`
+do
+    if test $i = $comp1_ch_uuid; then
+        exp_ref_ch_list="${exp_ref_ch_list}$i"
+    elif test $i = $comp2_ch_uuid; then
+        exp_ref_ch_list="${exp_ref_ch_list}$i"
+    fi
+done
+
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$exp_ref_ch_list" = "$ref_ch_list"])
+
+# Unind sw1-p1. comp2 should not be in the ref_chassis.
+ovn-sbctl lsp-unbind sw1-p1
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw1-p1` = xdown])
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp2_ch_uuid" = "$ref_ch_list"])
+
+# Create sw2 and attach it to lr2
+ovn-nbctl ls-add sw2
+ovn-nbctl lsp-add sw2 sw2-p1
+ovn-nbctl lr-add lr2
+ovn-nbctl lrp-add lr2 lr2-sw2 00:00:20:20:12:17 30.0.0.1/24
+ovn-nbctl lsp-add sw2 sw2-lr2
+ovn-nbctl lsp-set-type sw2-lr2 router
+ovn-nbctl lsp-set-addresses sw2-lr2 router
+ovn-nbctl lsp-set-options sw2-lr2 router-port=lr2-sw2
+
+# Bind sw2-p1 to comp1
+ovn-sbctl lsp-bind sw2-p1 comp1
+# Wait until sw2-p1 is up
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw2-p1` = xup])
+
+# sw2-p1 is not connected to lr0. So comp1 should not be in 'ref_chassis'
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp2_ch_uuid" = "$ref_ch_list"])
+
+# Now attach sw1 to lr2. With this sw2-p1 is indirectly connected to lr0.
+ovn-nbctl lrp-add lr2 lr2-sw1 00:00:20:20:12:18 20.0.0.10/24
+ovn-nbctl lsp-add sw1 sw1-lr2
+ovn-nbctl lsp-set-type sw1-lr2 router
+ovn-nbctl lsp-set-addresses sw1-lr2 router
+ovn-nbctl lsp-set-options sw1-lr2 router-port=lr2-sw1
+
+# sw2-p1 is indirectly connected to lr0. So comp1 (and comp2) should be in
+# 'ref_chassis'
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$exp_ref_ch_list" = "$ref_ch_list"])
+
+# Create sw0-p2 and bind it to comp1
+ovn-nbctl lsp-add sw0 sw0-p2
+ovn-sbctl lsp-bind sw0-p2 comp1
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw0-p2` = xup])
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$exp_ref_ch_list" = "$ref_ch_list"])
+
+# unbind sw0-p2
+ovn-sbctl lsp-unbind sw0-p2
+OVS_WAIT_UNTIL([test x`ovn-nbctl lsp-get-up sw0-p2` = xdown])
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$exp_ref_ch_list" = "$ref_ch_list"])
+
+# Delete lr1-sw0. comp1 should be deleted from ref_chassis as there is no link
+# from sw1 and sw2 to lr0.
+ovn-nbctl lrp-del lr1-sw0
+
+OVS_WAIT_UNTIL(
+    [ref_ch_list=`ovn-sbctl --bare --columns ref_chassis find ha_chassis_group | sort`
+     # Trim the spaces.
+     ref_ch_list=`echo $ref_ch_list | sed 's/ //g'`
+     test "$comp2_ch_uuid" = "$ref_ch_list"])
+
+# Set redirect-chassis option to lr0-public. It should be ignored.
+ovn-nbctl set logical_router_port lr0-public options:redirect-chassis=ch1
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group | wc -l`])
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="lr0-public" | wc -l`])
+
+ovn-sbctl --bare --columns _uuid find ha_chassis
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Delete the gateway chassis. HA chassis group should be created in SB DB
+# for the redirect-chassis option.
+ovn-nbctl clear logical_router_port lr0-public gateway_chassis
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group | wc -l`])
+
+ovn-sbctl list ha_chassis_group
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="lr0-public_ch1" | wc -l`])
+
+ovn-sbctl --bare --columns _uuid find ha_chassis
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl list ha_chassis | grep chassis |
+grep -v chassis-name | wc -l`])
+
+# Clear the redirect-chassis option.
+ovn-nbctl clear logical_router_port lr0-public options
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list ha_chassis_group |  wc -l`])
+AT_CHECK([test 0 = `ovn-sbctl list ha_chassis | wc -l`])
+
+# Delete old sw0.
+ovn-nbctl ls-del sw0
+
+# Create external logical ports and associate ha_chassis_group
+ovn-nbctl ls-add sw0
+ovn-nbctl lsp-add sw0 sw0-pext1
+ovn-nbctl lsp-add sw0 sw0-pext2
+ovn-nbctl lsp-add sw0 sw0-p1
+
+ovn-nbctl lsp-set-addresses sw0-pext1 "00:00:00:00:00:03 10.0.0.3"
+ovn-nbctl lsp-set-addresses sw0-pext2 "00:00:00:00:00:03 10.0.0.4"
+ovn-nbctl lsp-set-addresses sw0-p1 "00:00:00:00:00:03 10.0.0.5"
+
+ovn-nbctl --wait=sb ha-chassis-group-add hagrp1
+
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch1 30
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch2 20
+ovn-nbctl --wait=sb ha-chassis-group-add-chassis hagrp1 ch3 10
+
+# ovn-northd should not create HA chassis group and HA chassis rows
+# unless the HA chassis group in OVN NB DB is associated to
+# a logical router port or logical port of type external.
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list ha_chassis_group |  wc -l`])
+AT_CHECK([test 0 = `ovn-sbctl list ha_chassis | wc -l`])
+
+hagrp1_uuid=`ovn-nbctl --bare --columns _uuid find ha_chassis_group \
+name=hagrp1`
+
+# The type of the lsp - sw0-pext1 is still not set to external.
+# So ha_chassis_group should be ignored.
+ovn-nbctl set logical_switch_port sw0-pext1 ha_chassis_group=$hagrp1_uuid
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 0 = `ovn-sbctl list ha_chassis | grep chassis | wc -l`])
+
+# Set the type of sw0-pext1 to external
+ovn-nbctl lsp-set-type sw0-pext1 external
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+sb_hagrp1_uuid=`ovn-sbctl --bare --columns _uuid find ha_chassis_group \
+name=hagrp1`
+
+AT_CHECK([test "$sb_hagrp1_uuid" = `ovn-sbctl --bare --columns \
+ha_chassis_group find port_binding logical_port=sw0-pext1`])
+
+# Set the type of sw0-pext2 to external and associate ha_chassis_group
+ovn-nbctl lsp-set-type sw0-pext2 external
+ovn-nbctl set logical_switch_port sw0-pext2 ha_chassis_group=$hagrp1_uuid
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis |
+grep -v chassis-name | wc -l`])
+AT_CHECK([test "$sb_hagrp1_uuid" = `ovn-sbctl --bare --columns \
+ha_chassis_group find port_binding logical_port=sw0-pext1`])
+
+OVS_WAIT_UNTIL([test "$sb_hagrp1_uuid" = `ovn-sbctl --bare --columns \
+ha_chassis_group find port_binding logical_port=sw0-pext2`])
+
+# sw0-p1 is a normal port. So ha_chassis_group should not be set
+# in port_binding.
+ovn-nbctl --wait=sb set logical_switch_port sw0-p1 \
+ha_chassis_group=$hagrp1_uuid
+
+OVS_WAIT_UNTIL([test x$(ovn-sbctl --bare --columns chassis find port_binding \
+logical_port=sw0-p1) = x], [0], [])
+
+# Clear ha_chassis_group for sw0-pext1
+ovn-nbctl --wait=sb clear logical_switch_port sw0-pext1 ha_chassis_group
+
+OVS_WAIT_UNTIL([test x$(ovn-sbctl --bare --columns chassis find port_binding \
+logical_port=sw0-pext1) = x], [0], [])
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns name find \
+ha_chassis_group name="hagrp1" | wc -l`])
+
+AT_CHECK([test 3 = `ovn-sbctl list ha_chassis | grep chassis | \
+grep -v chassis-name | wc -l`])
+
+# Clear ha_chassis_group for sw0-pext2
+ovn-nbctl --wait=sb clear logical_switch_port sw0-pext2 ha_chassis_group
+
+OVS_WAIT_UNTIL([test x$(ovn-sbctl --bare --columns chassis find port_binding \
+logical_port=sw0-pext2) = x], [0], [])
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list ha_chassis_group |  wc -l`])
+AT_CHECK([test 0 = `ovn-sbctl list ha_chassis | wc -l`])
+
+as ovn-sb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+as ovn-nb
+OVS_APP_EXIT_AND_WAIT([ovsdb-server])
+as northd
+OVS_APP_EXIT_AND_WAIT([ovn-northd])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- ovn-northd pause and resume])
+ovn_start
+
+AT_CHECK([test xfalse = x`as northd ovn-appctl -t ovn-northd is-paused`])
+AT_CHECK([as northd ovn-appctl -t ovn-northd status], [0], [Status: active
+])
+AT_CHECK([test xfalse = x`as northd-backup ovn-appctl -t ovn-northd \
+is-paused`])
+AT_CHECK([as northd-backup ovn-appctl -t ovn-northd status], [0],
+[Status: standby
+])
+
+ovn-nbctl ls-add sw0
+
+OVS_WAIT_UNTIL([
+    ovn-sbctl lflow-list sw0
+    test 0 = $?])
+
+ovn-nbctl ls-del sw0
+OVS_WAIT_UNTIL([
+    ovn-sbctl lflow-list sw0
+    test 1 = $?])
+
+# Now pause the ovn-northd
+as northd ovs-appctl -t ovn-northd pause
+as northd-backup ovs-appctl -t ovn-northd pause
+AT_CHECK([test xtrue = x`as northd ovn-appctl -t ovn-northd is-paused`])
+AT_CHECK([as northd ovn-appctl -t ovn-northd status], [0], [Status: paused
+])
+AT_CHECK([test xtrue = x`as northd-backup ovn-appctl -t ovn-northd is-paused`])
+AT_CHECK([as northd-backup ovn-appctl -t ovn-northd status], [0],
+[Status: paused
+])
+
+ovn-nbctl ls-add sw0
+
+# There should be no logical flows for sw0 datapath.
+OVS_WAIT_UNTIL([
+    ovn-sbctl lflow-list sw0
+    test 1 = $?])
+
+# Now resume ovn-northd
+as northd ovs-appctl -t ovn-northd resume
+as northd-backup ovs-appctl -t ovn-northd resume
+AT_CHECK([test xfalse = x`as northd ovn-appctl -t ovn-northd is-paused`])
+AT_CHECK([as northd ovn-appctl -t ovn-northd status], [0], [Status: active
+])
+AT_CHECK([test xfalse = x`as northd-backup ovn-appctl -t ovn-northd \
+is-paused`])
+AT_CHECK([as northd-backup ovn-appctl -t ovn-northd status], [0],
+[Status: standby
+])
+
+OVS_WAIT_UNTIL([
+    ovn-sbctl lflow-list sw0
+    test 0 = $?])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check Redirect Chassis propagation from NB to SB])
+ovn_start
+
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+
+ovn-nbctl lr-add R1
+ovn-nbctl lrp-add R1 R1-S1 02:ac:10:01:00:01 172.16.1.1/24
+
+ovn-nbctl ls-add S1
+ovn-nbctl lsp-add S1 S1-R1
+ovn-nbctl lsp-set-type S1-R1 router
+ovn-nbctl lsp-set-addresses S1-R1 router
+ovn-nbctl --wait=sb lsp-set-options S1-R1 router-port=R1-S1
+
+ovn-nbctl lrp-set-gateway-chassis R1-S1 gw1
+
+uuid=`ovn-sbctl --columns=_uuid --bare find Port_Binding logical_port=cr-R1-S1`
+echo "CR-LRP UUID is: " $uuid
+
+ovn-nbctl lrp-set-redirect-type R1-S1 bridged
+OVS_WAIT_UNTIL([ovn-sbctl get Port_Binding ${uuid} options:redirect-type], [0], [bridged
+])
+
+ovn-nbctl lrp-set-redirect-type R1-S1 overlay
+OVS_WAIT_UNTIL([ovn-sbctl get Port_Binding ${uuid} options:redirect-type], [0], [overlay
+])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check stateless dnat_and_snat rule])
+ovn_start
+
+ovn-sbctl chassis-add gw1 geneve 127.0.0.1
+
+ovn-nbctl lr-add R1
+ovn-nbctl lrp-add R1 R1-S1 02:ac:10:01:00:01 172.16.1.1/24
+
+ovn-nbctl ls-add S1
+ovn-nbctl lsp-add S1 S1-R1
+ovn-nbctl lsp-set-type S1-R1 router
+ovn-nbctl lsp-set-addresses S1-R1 router
+ovn-nbctl --wait=sb lsp-set-options S1-R1 router-port=R1-S1
+
+ovn-nbctl lrp-set-gateway-chassis R1-S1 gw1
+
+uuid=`ovn-sbctl --columns=_uuid --bare find Port_Binding logical_port=cr-R1-S1`
+echo "CR-LRP UUID is: " $uuid
+
+# IPV4
+ovn-nbctl lr-nat-add R1 dnat_and_snat  172.16.1.1 50.0.0.11
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl dump-flows R1 | grep lr_in_unsnat | \
+wc -l`])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_snat | wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_dnat | wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip4.dst=| wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip4.src=| wc -l], [0], [0
+])
+
+ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
+
+ovn-nbctl --stateless lr-nat-add R1 dnat_and_snat  172.16.1.1 50.0.0.11
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl dump-flows R1 | grep lr_in_unsnat | \
+wc -l`])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_snat | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_dnat | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip4.dst=| wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip4.src=| wc -l], [0], [2
+])
+ovn-nbctl lr-nat-del R1 dnat_and_snat  172.16.1.1
+
+# IPV6
+ovn-nbctl lr-nat-add R1 dnat_and_snat fd01::1 fd11::2
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl dump-flows R1 | grep lr_in_unsnat | \
+wc -l`])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_snat | wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_dnat | wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip6.dst=| wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip6.src=| wc -l], [0], [0
+])
+
+ovn-nbctl lr-nat-del R1 dnat_and_snat  fd01::1
+ovn-nbctl --stateless lr-nat-add R1 dnat_and_snat fd01::1 fd11::2
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl dump-flows R1 | grep lr_in_unsnat | \
+wc -l`])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_snat | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ct_dnat | wc -l], [0], [0
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip6.dst=| wc -l], [0], [2
+])
+
+AT_CHECK([ovn-sbctl dump-flows R1 | grep ip6.src=| wc -l], [0], [2
+])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check Load balancer health check and Service Monitor sync])
+AT_SKIP_IF([test $HAVE_PYTHON = no])
+ovn_start
+
+ovn-nbctl lb-add lb1 10.0.0.10:80 10.0.0.3:80,20.0.0.3:80
+
+ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:10.0.0.3=sw0-p1
+ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:20.0.0.3=sw1-p1
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list service_monitor |  wc -l`])
+
+ovn-nbctl --wait=sb -- --id=@hc create \
+Load_Balancer_Health_Check vip="10.0.0.10\:80" -- add Load_Balancer . \
+health_check @hc
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list service_monitor |  wc -l`])
+
+# create logical switches and ports
+ovn-nbctl ls-add sw0
+ovn-nbctl --wait=sb lsp-add sw0 sw0-p1 -- lsp-set-addresses sw0-p1 \
+"00:00:00:00:00:03 10.0.0.3"
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | wc -l`])
+
+ovn-nbctl ls-add sw1
+ovn-nbctl --wait=sb lsp-add sw1 sw1-p1 -- lsp-set-addresses sw1-p1 \
+"02:00:00:00:00:03 20.0.0.3"
+
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | sed '/^$/d' | wc -l`])
+
+ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:10.0.0.3=sw0-p1:10.0.0.2
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | wc -l`])
+
+ovn-nbctl --wait=sb set load_balancer . ip_port_mappings:20.0.0.3=sw1-p1:20.0.0.2
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | sed '/^$/d' | wc -l`])
+
+ovn-nbctl --wait=sb ls-lb-add sw0 lb1
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+])
+
+# Delete the Load_Balancer_Health_Check
+ovn-nbctl --wait=sb clear load_balancer . health_check
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list service_monitor |  wc -l`])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+])
+
+# Create the Load_Balancer_Health_Check again.
+ovn-nbctl --wait=sb -- --id=@hc create \
+Load_Balancer_Health_Check vip="10.0.0.10\:80" -- add Load_Balancer . \
+health_check @hc
+
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | sed '/^$/d' | wc -l`])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+])
+
+# Get the uuid of both the service_monitor
+sm_sw0_p1=`ovn-sbctl --bare --columns _uuid find service_monitor logical_port=sw0-p1`
+sm_sw1_p1=`ovn-sbctl --bare --columns _uuid find service_monitor logical_port=sw1-p1`
+
+# Set the service monitor for sw1-p1 to offline
+ovn-sbctl set service_monitor $sm_sw1_p1 status=offline
+
+OVS_WAIT_UNTIL([
+    status=`ovn-sbctl --bare --columns status find service_monitor logical_port=sw1-p1`
+    test "$status" = "offline"])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80);)
+])
+
+# Set the service monitor for sw0-p1 to offline
+ovn-sbctl set service_monitor $sm_sw0_p1 status=offline
+
+OVS_WAIT_UNTIL([
+    status=`ovn-sbctl --bare --columns status find service_monitor logical_port=sw0-p1`
+    test "$status" = "offline"])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+])
+
+ovn-sbctl dump-flows sw0 | grep "ip4.dst == 10.0.0.10 && tcp.dst == 80" \
+| grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(drop;)
+])
+
+# Set the service monitor for sw0-p1 and sw1-p1 to online
+ovn-sbctl set service_monitor $sm_sw0_p1 status=online
+ovn-sbctl set service_monitor $sm_sw1_p1 status=online
+
+OVS_WAIT_UNTIL([
+    status=`ovn-sbctl --bare --columns status find service_monitor logical_port=sw1-p1`
+    test "$status" = "online"])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+])
+
+# Set the service monitor for sw1-p1 to error
+ovn-sbctl set service_monitor $sm_sw1_p1 status=error
+OVS_WAIT_UNTIL([
+    status=`ovn-sbctl --bare --columns status find service_monitor logical_port=sw1-p1`
+    test "$status" = "error"])
+
+ovn-sbctl dump-flows sw0 | grep "ip4.dst == 10.0.0.10 && tcp.dst == 80" \
+| grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80);)
+])
+
+# Add one more vip to lb1
+
+ovn-nbctl set load_balancer . vip:"10.0.0.40\:1000"="10.0.0.3:1000,20.0.0.3:80"
+
+# create health_check for new vip - 10.0.0.40
+ovn-nbctl --wait=sb -- --id=@hc create \
+Load_Balancer_Health_Check vip="10.0.0.40\:1000" -- add Load_Balancer . \
+health_check @hc
+
+# There should be totally 3 rows in service_monitor for -
+#    * 10.0.0.3:80
+#    * 10.0.0.3:1000
+#    * 20.0.0.3:80
+
+OVS_WAIT_UNTIL([test 3 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | sed '/^$/d' | wc -l`])
+
+# There should be 2 rows with logical_port=sw0-p1
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor logical_port=sw0-p1 | sed '/^$/d' | wc -l`])
+
+# There should be 1 row1 with port=1000
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor port=1000 | sed '/^$/d' | wc -l`])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80);)
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.40 && tcp.dst == 1000), action=(ct_lb(10.0.0.3:1000);)
+])
+
+# Set the service monitor for sw1-p1 to online
+ovn-sbctl set service_monitor $sm_sw1_p1 status=online
+
+OVS_WAIT_UNTIL([
+    status=`ovn-sbctl --bare --columns status find service_monitor logical_port=sw1-p1`
+    test "$status" = "online"])
+
+ovn-sbctl dump-flows sw0 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.40 && tcp.dst == 1000), action=(ct_lb(10.0.0.3:1000,20.0.0.3:80);)
+])
+
+# Associate lb1 to sw1
+ovn-nbctl --wait=sb ls-lb-add sw1 lb1
+ovn-sbctl dump-flows sw1 | grep ct_lb | grep priority=120 > lflows.txt
+AT_CHECK([cat lflows.txt], [0], [dnl
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.10 && tcp.dst == 80), action=(ct_lb(10.0.0.3:80,20.0.0.3:80);)
+  table=10(ls_in_stateful     ), priority=120  , match=(ct.new && ip4.dst == 10.0.0.40 && tcp.dst == 1000), action=(ct_lb(10.0.0.3:1000,20.0.0.3:80);)
+])
+
+# Now create lb2 same as lb1 but udp protocol.
+ovn-nbctl lb-add lb2 10.0.0.10:80 10.0.0.3:80,20.0.0.3:80 udp
+lb2_uuid=`ovn-nbctl lb-list | grep udp | awk '{print $1}'`
+ovn-nbctl --wait=sb set load_balancer $lb2_uuid ip_port_mappings:10.0.0.3=sw0-p1:10.0.0.2
+ovn-nbctl --wait=sb set load_balancer $lb2_uuid ip_port_mappings:20.0.0.3=sw1-p1:20.0.0.2
+
+ovn-nbctl -- --id=@hc create Load_Balancer_Health_Check vip="10.0.0.10\:80" -- add Load_Balancer $lb2_uuid health_check @hc
+
+ovn-nbctl ls-lb-add sw0 lb2
+ovn-nbctl ls-lb-add sw1 lb2
+ovn-nbctl lr-lb-add lr0 lb2
+
+OVS_WAIT_UNTIL([test 5 = `ovn-sbctl --bare --columns _uuid find \
+service_monitor | sed '/^$/d' | wc -l`])
+
+# Change the svc_monitor_mac. This should get reflected in service_monitor table rows.
+ovn-nbctl set NB_Global . options:svc_monitor_mac="fe:a0:65:a2:01:03"
+
+OVS_WAIT_UNTIL([test 5 = `ovn-sbctl --bare --columns src_mac find \
+service_monitor | grep "fe:a0:65:a2:01:03" | wc -l`])
+
+# Change the source ip for 10.0.0.3 backend ip in lb2
+ovn-nbctl --wait=sb set load_balancer $lb2_uuid ip_port_mappings:10.0.0.3=sw0-p1:10.0.0.100
+
+OVS_WAIT_UNTIL([test 1 = `ovn-sbctl --bare --columns src_ip find \
+service_monitor logical_port=sw0-p1 | grep "10.0.0.100" | wc -l`])
+
+ovn-nbctl --wait=sb lb-del lb1
+OVS_WAIT_UNTIL([test 2 = `ovn-sbctl --bare --columns _uuid find service_monitor | sed '/^$/d' | wc -l`])
+
+ovn-nbctl --wait=sb lb-del lb2
+OVS_WAIT_UNTIL([test 0 = `ovn-sbctl list service_monitor |  wc -l`])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- Load balancer VIP in NAT entries])
+AT_SKIP_IF([test $HAVE_PYTHON = no])
+ovn_start
+
+ovn-nbctl lr-add lr0
+ovn-nbctl lrp-add lr0 lr0-public 00:00:01:01:02:04 192.168.2.1/24
+ovn-nbctl lrp-add lr0 lr0-join 00:00:01:01:02:04 10.10.0.1/24
+
+ovn-nbctl set logical_router lr0 options:chassis=ch1
+
+ovn-nbctl lb-add lb1 "192.168.2.1:8080" "10.0.0.4:8080"
+ovn-nbctl lb-add lb2 "192.168.2.4:8080" "10.0.0.5:8080" udp
+ovn-nbctl lb-add lb3 "192.168.2.5:8080" "10.0.0.6:8080"
+ovn-nbctl lb-add lb4 "192.168.2.6:8080" "10.0.0.7:8080"
+
+ovn-nbctl lr-lb-add lr0 lb1
+ovn-nbctl lr-lb-add lr0 lb2
+ovn-nbctl lr-lb-add lr0 lb3
+ovn-nbctl lr-lb-add lr0 lb4
+
+ovn-nbctl lr-nat-add lr0 snat 192.168.2.1 10.0.0.0/24
+ovn-nbctl lr-nat-add lr0 dnat_and_snat 192.168.2.4 10.0.0.4
+ovn-nbctl lr-nat-add lr0 dnat 192.168.2.5 10.0.0.5
+
+OVS_WAIT_UNTIL([test 1 = $(ovn-sbctl dump-flows lr0 | grep lr_in_unsnat | \
+grep "ip4 && ip4.dst == 192.168.2.1 && tcp && tcp.dst == 8080" -c) ])
+
+AT_CHECK([test 1 = $(ovn-sbctl dump-flows lr0 | grep lr_in_unsnat | \
+grep "ip4 && ip4.dst == 192.168.2.4 && udp && udp.dst == 8080" -c) ])
+
+AT_CHECK([test 1 = $(ovn-sbctl dump-flows lr0 | grep lr_in_unsnat | \
+grep "ip4 && ip4.dst == 192.168.2.5 && tcp && tcp.dst == 8080" -c) ])
+
+AT_CHECK([test 0 = $(ovn-sbctl dump-flows lr0 | grep lr_in_unsnat | \
+grep "ip4 && ip4.dst == 192.168.2.6 && tcp && tcp.dst == 8080" -c) ])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check reconcile stale Datapath_Binding])
+ovn_start
+
+ovn-nbctl lr-add lr
+ovn-nbctl lrp-add lr p 00:00:00:00:00:01 1.1.1.1/24
+
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+# Create a MAC_Binding referring the router datapath.
+dp=$(ovn-sbctl --bare --columns _uuid list datapath .)
+ovn-sbctl create mac_binding logical_port="p" ip="1.1.1.2" datapath="$dp"
+
+ovn-nbctl lrp-del p -- lr-del lr -- \
+    lr-add lr -- lrp-add lr p 00:00:00:00:00:01 1.1.1.1/24
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+AT_CHECK([test 1 = $(ovn-sbctl --columns _uuid list Datapath_Binding | wc -l)])
+
+nb_uuid=$(ovn-sbctl get Datapath_Binding . external_ids:logical-router)
+lr_uuid=$(ovn-nbctl --columns _uuid list Logical_Router .)
+AT_CHECK[test ${nb_uuid} = ${lr_uuid}]
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check reconcile stale tunnel keys])
+ovn_start
+
+ovn-nbctl ls-add ls1
+ovn-nbctl ls-add ls2
+ovn-nbctl lsp-add ls1 lsp1
+ovn-nbctl lsp-add ls2 lsp2
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+# Ports are bound on different datapaths so it's expected that they both
+# get tunnel_key == 1.
+AT_CHECK([test 1 = $(ovn-sbctl --bare --columns tunnel_key find \
+port_binding logical_port=lsp1)])
+AT_CHECK([test 1 = $(ovn-sbctl --bare --columns tunnel_key find \
+port_binding logical_port=lsp2)])
+
+ovn-nbctl lsp-del lsp2 -- lsp-add ls1 lsp2
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+AT_CHECK([test 1 = $(ovn-sbctl --bare --columns tunnel_key find \
+port_binding logical_port=lsp1)])
+AT_CHECK([test 2 = $(ovn-sbctl --bare --columns tunnel_key find \
+port_binding logical_port=lsp2)])
+
+# ovn-northd should allocate a new tunnel_key for lsp1 or lsp2 to maintain
+# unique DB indices.
+AT_CHECK([test ${pb1_key} != ${pb2_key}])
+
+AT_CLEANUP
+
+AT_SETUP([ovn -- check reconcile stale Ha_Chassis_Group])
+ovn_start
+
+ovn-nbctl ls-add ls1
+ovn-nbctl ls-add ls2
+ovn-nbctl lsp-add ls1 lsp1
+ovn-nbctl lsp-add ls2 lsp2
+
+ovn-nbctl lsp-set-type lsp2 external
+
+ovn-nbctl ha-chassis-group-add chg1
+ovn-nbctl ha-chassis-group-add-chassis chg1 chassis-1 30
+
+chg1_uuid=$(ovn-nbctl --bare --columns _uuid list Ha_Chassis_Group .)
+ovn-nbctl set logical_switch_port lsp2 ha_chassis_group=${chg1_uuid}
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+# Move lsp2 from ls2 to ls1. This should also remove the SB HA_Chassis_Group
+# record.
+ovn-nbctl lsp-del lsp2 -- lsp-add ls1 lsp2
+AT_CHECK([ovn-nbctl --wait=sb sync], [0])
+
+AT_CHECK([test 0 = $(ovn-sbctl list Ha_Chassis_Group | wc -l)])
+
+AT_CLEANUP
+
+# This test case tests that when a logical switch has load balancers associated
+# (with VIPs configured), the below logical flow is added by ovn-northd.
+# table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+# This test case is added for the BZ -
+# https://bugzilla.redhat.com/show_bug.cgi?id=1849162
+#
+# ovn-northd was not adding the above lflow if the last load balancer associated
+# to the logical switch doesn't have the VIP configured even if other load
+# balancers before the last one in the last have VIPs configured.
+# So make sure that the above lflow is added even if one load balancer has VIP
+# associated.
+
+AT_SETUP([ovn -- Load balancer - missing ls_out_pre_lb flows])
+ovn_start
+
+ovn-nbctl ls-add sw0
+ovn-nbctl lsp-add sw0 sw0-p1
+
+ovn-nbctl lb-add lb1 "10.0.0.10" "10.0.0.3"
+ovn-nbctl lb-add lb2 "10.0.0.11" "10.0.0.4"
+
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+])
+
+ovn-nbctl ls-lb-add sw0 lb1
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+  table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+])
+
+ovn-nbctl ls-lb-add sw0 lb2
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+  table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+])
+
+lb1_uuid=$(ovn-nbctl --bare --columns _uuid find load_balancer name=lb1)
+lb2_uuid=$(ovn-nbctl --bare --columns _uuid find load_balancer name=lb2)
+
+ovn-nbctl clear load_balancer $lb1_uuid vips
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+  table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+])
+
+ovn-nbctl clear load_balancer $lb2_uuid vips
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+])
+
+ovn-nbctl set load_balancer $lb1_uuid vips:"10.0.0.10"="10.0.0.3"
+ovn-nbctl set load_balancer $lb2_uuid vips:"10.0.0.11"="10.0.0.4"
+
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+  table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+])
+
+# Now reverse the order of clearing the vip.
+ovn-nbctl clear load_balancer $lb2_uuid vips
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+  table=0 (ls_out_pre_lb      ), priority=100  , match=(ip), action=(reg0[[0]] = 1; next;)
+])
+
+ovn-nbctl clear load_balancer $lb1_uuid vips
+ovn-nbctl --wait=sb sync
+AT_CHECK([ovn-sbctl lflow-list | grep "ls_out_pre_lb.*priority=100" | grep reg0 | sort], [0], [dnl
+])
+
+AT_CLEANUP

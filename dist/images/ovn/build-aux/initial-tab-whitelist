@@ -1,0 +1,10 @@
+\.am$
+\.m4$
+\.mk$
+\.png$
+\.sln$
+^ovs/
+^third-party/
+^xenserver/
+^debian/rules.modules$
+^debian/rules$
